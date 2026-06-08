@@ -2,13 +2,20 @@
   "name": "whatsapp-project",
   "version": "1.0.0",
   "description": "Whatsapp apps",
-  "main": "app.js",
+  "type": "module",
+  "main": "src/index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^5.2.1"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "whatsapp-business": "^1.14.3"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

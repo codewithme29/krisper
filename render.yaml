@@ -3,8 +3,12 @@ services:
     name: krisper
     runtime: node
     plan: free
-    buildCommand: yarn install --frozen-lockfile
-    startCommand: node app.js
+    buildCommand: npm install --prefix krisper
+    startCommand: node krisper/src/index.js
     envVars:
       - key: NODE_ENV
-        value: production
+        value: development
+      - key: VERIFY_TOKEN
+        sync: false
+      - key: node
+        value: 3000
