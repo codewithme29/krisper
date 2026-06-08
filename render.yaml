@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: kasper
+    name: krisper
     runtime: node
     plan: free
     buildCommand: yarn install --frozen-lockfile
