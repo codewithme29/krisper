@@ -71,23 +71,40 @@ app.get("/", (req, res) => {
   res.send("Webhook server is running.");
 });
 app.get("/products", (req, res) => {
-  const { id } = req.query;
+  const { id, search } = req.query;
 
-  // Return all products if no id is supplied
-  if (!id) {
-    return res.status(200).json(products);
+  // Search by ID
+  if (id) {
+    const product = products.find((p) => p.id === Number(id));
+
+    if (!product) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found",
+      });
+    }
+
+    return res.json(product);
   }
 
-  const product = products.find((p) => p.id === parseInt(id, 10));
+  // Search by keyword
+  if (search) {
+    const keyword = search.toLowerCase().trim();
 
-  if (!product) {
-    return res.status(404).json({
-      success: false,
-      message: "Product not found",
+    const results = products.filter((p) =>
+      p.title.toLowerCase().includes(keyword) ||
+      p.description.toLowerCase().includes(keyword) ||
+      p.category.toLowerCase().includes(keyword)
+    );
+
+    return res.json({
+      total: results.length,
+      products: results,
     });
   }
 
-  return res.status(200).json(product);
+  // Return all products
+  return res.json(products);
 });
 // Meta Webhook Verification
 app.get("/webhook", (req, res) => {
