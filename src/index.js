@@ -71,9 +71,24 @@ app.get("/", (req, res) => {
   res.send("Webhook server is running.");
 });
 app.get("/products", (req, res) => {
-  res.status(200).json(products);
-});
+  const { id } = req.query;
 
+  // Return all products if no id is supplied
+  if (!id) {
+    return res.status(200).json(products);
+  }
+
+  const product = products.find((p) => p.id === parseInt(id, 10));
+
+  if (!product) {
+    return res.status(404).json({
+      success: false,
+      message: "Product not found",
+    });
+  }
+
+  return res.status(200).json(product);
+});
 // Meta Webhook Verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
