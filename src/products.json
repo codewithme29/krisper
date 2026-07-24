@@ -238,5 +238,17 @@
       "rate": 3.6,
       "count": 145
     }
+  },
+   {
+    "id": 1,
+    "title": "Nike- Laptop Cover",
+    "price": 50,
+    "description": "A cool sleeve to protect your laptop",
+    "category": "Accessories",
+    "image": "https://rukminim2.flixcart.com/image/480/640/xif0q/bag/5/2/8/-original-imahfskbxceqjhng.jpeg?q=90",
+    "rating": {
+      "rate": 5.0,
+      "count": 120
+    }
   }
 ]
