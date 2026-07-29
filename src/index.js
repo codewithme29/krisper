@@ -106,6 +106,63 @@ app.get("/products", (req, res) => {
   // Return all products
   return res.json(products);
 });
+
+app.post("/checkout", (req, res) => {
+  const {
+    fullName,
+    phoneNumber,
+    addressLine1,
+    city,
+    state,
+    postalCode,
+    country,
+    productName,
+    price,
+  } = req.body;
+
+  // Basic validation
+  const requiredFields = [
+    "fullName",
+    "phoneNumber",
+    "addressLine1",
+    "city",
+    "state",
+    "postalCode",
+    "country",
+    "productName",
+    "price",
+  ];
+
+  const missingFields = requiredFields.filter(
+    (field) => !req.body[field]
+  );
+
+  if (missingFields.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Missing required fields.",
+      missingFields,
+    });
+  }
+
+  // Random delivery between 1 and 7 days
+  const randomDays = Math.floor(Math.random() * 7) + 1;
+
+  const arrivalDate = new Date();
+  arrivalDate.setDate(arrivalDate.getDate() + randomDays);
+
+  res.status(200).json({
+    success: true,
+    message: "Order placed successfully.",
+    order: {
+      customer: fullName,
+      productName,
+      price,
+    },
+    estimatedArrivalDate: arrivalDate.toISOString().split("T")[0], // YYYY-MM-DD
+  });
+});
+
 // Meta Webhook Verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
