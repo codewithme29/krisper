@@ -239,6 +239,7 @@ app.post("/route", async (req, res) => {
       dropoffLongitude,
     } = req.body;
 
+    // Validate input
     if (
       pickupLatitude == null ||
       pickupLongitude == null ||
@@ -247,12 +248,13 @@ app.post("/route", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message: "Pickup and dropoff coordinates are required.",
+        message:
+          "pickupLatitude, pickupLongitude, dropoffLatitude and dropoffLongitude are required.",
       });
     }
 
-    // Step 1: Compute the driving route
-    const routeResponse = await axios.post(
+    // Google Routes API
+    const googleResponse = await axios.post(
       "https://routes.googleapis.com/directions/v2:computeRoutes",
       {
         origin: {
@@ -279,14 +281,14 @@ app.post("/route", async (req, res) => {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
           "X-Goog-FieldMask":
-            "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+            "routes.distanceMeters,routes.duration",
         },
       }
     );
 
     if (
-      !routeResponse.data.routes ||
-      routeResponse.data.routes.length === 0
+      !googleResponse.data.routes ||
+      googleResponse.data.routes.length === 0
     ) {
       return res.status(404).json({
         success: false,
@@ -294,38 +296,36 @@ app.post("/route", async (req, res) => {
       });
     }
 
-    const route = routeResponse.data.routes[0];
+    const route = googleResponse.data.routes[0];
 
     const distanceMeters = route.distanceMeters;
     const distanceKm = (distanceMeters / 1000).toFixed(2);
 
-    // duration comes as "1832s"
     const durationSeconds = parseInt(route.duration.replace("s", ""), 10);
 
     const hours = Math.floor(durationSeconds / 3600);
     const minutes = Math.floor((durationSeconds % 3600) / 60);
 
-    const formattedDuration =
+    const durationText =
       hours > 0
         ? `${hours} hr ${minutes} min`
         : `${minutes} min`;
 
-    const encodedPolyline = route.polyline.encodedPolyline;
+    // Center of map
+    const centerLat =
+      (Number(pickupLatitude) + Number(dropoffLatitude)) / 2;
 
-    // Step 2: Build Static Map URL
+    const centerLng =
+      (Number(pickupLongitude) + Number(dropoffLongitude)) / 2;
+
+    // Free OpenStreetMap Directions URL
     const mapUrl =
-      `https://maps.googleapis.com/maps/api/staticmap` +
-      `?size=900x600` +
-      `&scale=2` +
-      `&maptype=roadmap` +
-      `&markers=color:green|label:P|${pickupLatitude},${pickupLongitude}` +
-      `&markers=color:red|label:D|${dropoffLatitude},${dropoffLongitude}` +
-      `&path=color:0x1976D2|weight:6|enc:${encodeURIComponent(
-        encodedPolyline
-      )}` +
-      `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+      `https://www.openstreetmap.org/directions` +
+      `?engine=fossgis_osrm_car` +
+      `&route=${pickupLatitude},${pickupLongitude};${dropoffLatitude},${dropoffLongitude}` +
+      `#map=12/${centerLat}/${centerLng}`;
 
-    return res.json({
+    return res.status(200).json({
       success: true,
       pickup: {
         latitude: Number(pickupLatitude),
@@ -337,11 +337,11 @@ app.post("/route", async (req, res) => {
       },
       distance: {
         meters: distanceMeters,
-        kilometers: distanceKm,
+        kilometers: Number(distanceKm),
       },
       duration: {
         seconds: durationSeconds,
-        text: formattedDuration,
+        text: durationText,
       },
       mapUrl,
     });
@@ -350,7 +350,7 @@ app.post("/route", async (req, res) => {
 
     return res.status(500).json({
       success: false,
-      message: "Failed to compute route.",
+      message: "Unable to calculate route.",
       error: err.response?.data || err.message,
     });
   }
