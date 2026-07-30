@@ -48,6 +48,7 @@
 
 import "dotenv/config";
 import express from "express";
+import axios from "axios";
 import products from "./products.json" with { type: "json" };
 const app = express();
 
@@ -161,6 +162,198 @@ app.post("/checkout", (req, res) => {
     },
     estimatedArrivalDate: arrivalDate.toISOString().split("T")[0], // YYYY-MM-DD
   });
+});
+
+app.post("/places/autocomplete", async (req, res) => {
+  try {
+    const { input } = req.body;
+
+    const response = await axios.post(
+      "https://places.googleapis.com/v1/places:autocomplete",
+      {
+        input
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
+        }
+      }
+    );
+
+    const suggestions =
+      response.data.suggestions?.map((item) => ({
+        placeId: item.placePrediction.placeId,
+        name: item.placePrediction.text.text
+      })) || [];
+
+    res.json(suggestions);
+
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+    res.status(500).json(err.response?.data || {});
+  }
+});
+app.post("/places/details", async (req, res) => {
+  try {
+    const { placeId } = req.body;
+
+    if (!placeId) {
+      return res.status(400).json({
+        message: "placeId is required"
+      });
+    }
+
+    const response = await axios.get(
+  `https://places.googleapis.com/v1/places/${placeId}`,
+  {
+    headers: {
+      "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
+      "X-Goog-FieldMask": "id,displayName,formattedAddress,location"
+    }
+  }
+);
+
+    res.json({
+      placeId: response.data.id,
+      name: response.data.displayName.text,
+      address: response.data.formattedAddress,
+      latitude: response.data.location.latitude,
+      longitude: response.data.location.longitude
+    });
+
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+
+    res.status(500).json(err.response?.data || {});
+  }
+});
+
+
+app.post("/route", async (req, res) => {
+  try {
+    const {
+      pickupLatitude,
+      pickupLongitude,
+      dropoffLatitude,
+      dropoffLongitude,
+    } = req.body;
+
+    if (
+      pickupLatitude == null ||
+      pickupLongitude == null ||
+      dropoffLatitude == null ||
+      dropoffLongitude == null
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Pickup and dropoff coordinates are required.",
+      });
+    }
+
+    // Step 1: Compute the driving route
+    const routeResponse = await axios.post(
+      "https://routes.googleapis.com/directions/v2:computeRoutes",
+      {
+        origin: {
+          location: {
+            latLng: {
+              latitude: Number(pickupLatitude),
+              longitude: Number(pickupLongitude),
+            },
+          },
+        },
+        destination: {
+          location: {
+            latLng: {
+              latitude: Number(dropoffLatitude),
+              longitude: Number(dropoffLongitude),
+            },
+          },
+        },
+        travelMode: "DRIVE",
+        routingPreference: "TRAFFIC_AWARE",
+      },
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
+          "X-Goog-FieldMask":
+            "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
+        },
+      }
+    );
+
+    if (
+      !routeResponse.data.routes ||
+      routeResponse.data.routes.length === 0
+    ) {
+      return res.status(404).json({
+        success: false,
+        message: "No route found.",
+      });
+    }
+
+    const route = routeResponse.data.routes[0];
+
+    const distanceMeters = route.distanceMeters;
+    const distanceKm = (distanceMeters / 1000).toFixed(2);
+
+    // duration comes as "1832s"
+    const durationSeconds = parseInt(route.duration.replace("s", ""), 10);
+
+    const hours = Math.floor(durationSeconds / 3600);
+    const minutes = Math.floor((durationSeconds % 3600) / 60);
+
+    const formattedDuration =
+      hours > 0
+        ? `${hours} hr ${minutes} min`
+        : `${minutes} min`;
+
+    const encodedPolyline = route.polyline.encodedPolyline;
+
+    // Step 2: Build Static Map URL
+    const mapUrl =
+      `https://maps.googleapis.com/maps/api/staticmap` +
+      `?size=900x600` +
+      `&scale=2` +
+      `&maptype=roadmap` +
+      `&markers=color:green|label:P|${pickupLatitude},${pickupLongitude}` +
+      `&markers=color:red|label:D|${dropoffLatitude},${dropoffLongitude}` +
+      `&path=color:0x1976D2|weight:6|enc:${encodeURIComponent(
+        encodedPolyline
+      )}` +
+      `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
+
+    return res.json({
+      success: true,
+      pickup: {
+        latitude: Number(pickupLatitude),
+        longitude: Number(pickupLongitude),
+      },
+      dropoff: {
+        latitude: Number(dropoffLatitude),
+        longitude: Number(dropoffLongitude),
+      },
+      distance: {
+        meters: distanceMeters,
+        kilometers: distanceKm,
+      },
+      duration: {
+        seconds: durationSeconds,
+        text: formattedDuration,
+      },
+      mapUrl,
+    });
+  } catch (err) {
+    console.error(err.response?.data || err.message);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to compute route.",
+      error: err.response?.data || err.message,
+    });
+  }
 });
 
 // Meta Webhook Verification
