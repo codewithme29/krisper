@@ -1,54 +1,8 @@
-// // Import Express.js
-// import 'dotenv/config';
-// import express from 'express';
-
-// // import webhookRouter from './webhook.js';
-// // Create an Express app
-// const app = express();
-
-// // Middleware to parse JSON bodies
-// app.use(express.json());
-
-// // Set port and verify_token
-// const port = process.env.PORT;
-// const verifyToken = process.env.VERIFY_TOKEN;
-
-// // Route for GET requests
-// app.get('/', (req, res) => {
-//   const { 'hub.mode': mode, 'hub.challenge': challenge, 'hub.verify_token': token } = req.query;
-//     console.log("hey",token,verifyToken)
-//   if (token === verifyToken) {
-//     console.log('WEBHOOK VERIFIED');
-//     res.status(200).send(challenge);
-//   } else {
-//     console.log("Webhook not verified",token,verifyToken)
-//     res.status(403).end();
-//   }
-// });
-// app.get('/health', (_req, res) => {
-//     res.json({ status: 'ok', uptime: process.uptime() });
-// });
-
-// // app.use('/webhook', webhookRouter);
-
-// // Route for POST requests
-// app.post('/', (req, res) => {
-//   const timestamp = new Date().toISOString().replace('T', ' ').slice(0, 19);
-//   console.log(`\n\nWebhook received ${timestamp}\n`);
-//   console.log(JSON.stringify(req.body, null, 2));
-//   res.status(200).end();
-// });
-
-// // Start the server
-// app.listen(port, () => {
-//   console.log(`\nListening on port ${port}\n`);
-//   console.log(`\nHealthCheck endpoint: GET /health \n`);
-//   console.log(`\nListening on port ${port}\n`);
-// });
 
 import "dotenv/config";
 import express from "express";
 import axios from "axios";
+import crypto from "crypto";
 import products from "./products.json" with { type: "json" };
 const app = express();
 
@@ -354,6 +308,197 @@ app.post("/route", async (req, res) => {
       error: err.response?.data || err.message,
     });
   }
+});
+
+const drivers = [
+  {
+    id: "DRV001",
+    name: "Rahul Sharma",
+    phone: "+919810000001",
+    vehicle: "KA01AB1234",
+    location: { latitude: 12.9716, longitude: 77.5946 }
+  },
+  {
+    id: "DRV002",
+    name: "Amit Verma",
+    phone: "+919810000002",
+    vehicle: "KA02CD5678",
+    location: { latitude: 12.9854, longitude: 77.6058 }
+  },
+  {
+    id: "DRV003",
+    name: "Rakesh Kumar",
+    phone: "+919810000003",
+    vehicle: "KA03EF2345",
+    location: { latitude: 12.9898, longitude: 77.6203 }
+  },
+  {
+    id: "DRV004",
+    name: "Suresh Patel",
+    phone: "+919810000004",
+    vehicle: "KA04GH9876",
+    location: { latitude: 12.9634, longitude: 77.6011 }
+  },
+  {
+    id: "DRV005",
+    name: "Vijay Singh",
+    phone: "+919810000005",
+    vehicle: "KA05JK3456",
+    location: { latitude: 12.9502, longitude: 77.6109 }
+  },
+  {
+    id: "DRV006",
+    name: "Manoj Yadav",
+    phone: "+919810000006",
+    vehicle: "KA06LM6789",
+    location: { latitude: 12.9772, longitude: 77.6385 }
+  },
+  {
+    id: "DRV007",
+    name: "Deepak Gupta",
+    phone: "+919810000007",
+    vehicle: "KA07NP4567",
+    location: { latitude: 12.9423, longitude: 77.5841 }
+  },
+  {
+    id: "DRV008",
+    name: "Anil Mehta",
+    phone: "+919810000008",
+    vehicle: "KA08QR1122",
+    location: { latitude: 12.9982, longitude: 77.6412 }
+  },
+  {
+    id: "DRV009",
+    name: "Prakash Jain",
+    phone: "+919810000009",
+    vehicle: "KA09ST3344",
+    location: { latitude: 12.9321, longitude: 77.6187 }
+  },
+  {
+    id: "DRV010",
+    name: "Sunil Nair",
+    phone: "+919810000010",
+    vehicle: "KA10UV5566",
+    location: { latitude: 12.9618, longitude: 77.6464 }
+  },
+  {
+    id: "DRV011",
+    name: "Arjun Reddy",
+    phone: "+919810000011",
+    vehicle: "KA11WX7788",
+    location: { latitude: 12.9745, longitude: 77.6533 }
+  },
+  {
+    id: "DRV012",
+    name: "Kiran Rao",
+    phone: "+919810000012",
+    vehicle: "KA12YZ8899",
+    location: { latitude: 12.9457, longitude: 77.6294 }
+  },
+  {
+    id: "DRV013",
+    name: "Rohit Mishra",
+    phone: "+919810000013",
+    vehicle: "KA13AA1111",
+    location: { latitude: 12.9841, longitude: 77.5715 }
+  },
+  {
+    id: "DRV014",
+    name: "Nitin Joshi",
+    phone: "+919810000014",
+    vehicle: "KA14BB2222",
+    location: { latitude: 12.9683, longitude: 77.6624 }
+  },
+  {
+    id: "DRV015",
+    name: "Harish Gowda",
+    phone: "+919810000015",
+    vehicle: "KA15CC3333",
+    location: { latitude: 12.9564, longitude: 77.5978 }
+  }
+];
+
+// In-memory ride store
+const rides = {};
+
+app.post("/driverdetails", (req, res) => {
+  const { customerPhone } = req.body;
+
+  if (!customerPhone) {
+    return res.status(400).json({
+      success: false,
+      message: "customerPhone is required"
+    });
+  }
+
+  // Existing active ride?
+  let ride = Object.values(rides).find(
+    r =>
+      r.customerPhone === customerPhone &&
+      ["ASSIGNED", "STARTED"].includes(r.status)
+  );
+
+  // Create a new ride if none exists
+  if (!ride) {
+    const driver =
+      drivers[Math.floor(Math.random() * drivers.length)];
+
+    const rideId = `RIDE-${Date.now()}`;
+
+    ride = {
+      rideId,
+      customerPhone,
+      otp: crypto.randomInt(100000, 999999).toString(),
+      status: "ASSIGNED",
+      driver
+    };
+
+    rides[rideId] = ride;
+  }
+
+  return res.json({
+    success: true,
+    rideId: ride.rideId,
+    otp: ride.otp,
+    status: ride.status,
+    driver: {
+      id: ride.driver.id,
+      name: ride.driver.name,
+      phone: ride.driver.phone,
+      vehicle: ride.driver.vehicle,
+      location: ride.driver.location
+    }
+  });
+});
+app.post("/ride/verify-otp", async (req, res) => {
+  const { rideId, otp } = req.body;
+
+  const ride = rides[rideId];
+
+  if (!ride) {
+    return res.status(404).json({
+      success: false,
+      message: "Ride not found"
+    });
+  }
+
+  if (ride.otp !== otp) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid OTP"
+    });
+  }
+
+  ride.status = "STARTED";
+
+  // await triggerRideStartedEvent(rideId);
+
+  return res.json({
+    success: true,
+    message: "OTP verified successfully.",
+    rideStatus: ride.status,
+    driver: ride.driver
+  });
 });
 
 // Meta Webhook Verification
