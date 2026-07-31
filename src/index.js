@@ -471,36 +471,128 @@ app.post("/driverdetails", (req, res) => {
   });
 });
 app.post("/ride/verify-otp", async (req, res) => {
-  const { rideId, otp } = req.body;
+  try {
+    let { rideId, otp, customerPhone } = req.body;
 
-  const ride = rides[rideId];
+    if (!rideId || !otp || !customerPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "rideId, otp and customerPhone are required",
+      });
+    }
 
-  if (!ride) {
-    return res.status(404).json({
+    // Remove all non-digit characters
+    customerPhone = customerPhone.toString().replace(/\D/g, "");
+
+    // Remove country code if user already passed 91XXXXXXXXXX
+    if (customerPhone.startsWith("91") && customerPhone.length === 12) {
+      customerPhone = customerPhone.substring(2);
+    }
+
+    // Validate Indian mobile number
+    if (customerPhone.length !== 10) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid mobile number",
+      });
+    }
+
+    // Add +91 prefix
+    customerPhone = `+91${customerPhone}`;
+
+    const ride = rides[rideId];
+
+    if (!ride) {
+      return res.status(404).json({
+        success: false,
+        message: "Ride not found",
+      });
+    }
+
+    if (ride.otp !== otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid OTP",
+      });
+    }
+
+    // Save customer phone for Meta Agent Event
+    ride.customerPhone = customerPhone;
+
+    // Update ride status
+    ride.status = "STARTED";
+
+    // Trigger Meta Business Agent Event
+    let metaResponse = null;
+
+    try {
+      metaResponse = await sendRideStartedEvent(ride);
+    } catch (err) {
+      console.error("Meta Agent Event Failed", err.response?.data || err.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "OTP verified successfully.",
+      rideId: ride.rideId,
+      rideStatus: ride.status,
+      customerPhone,
+      driver: ride.driver,
+      metaAgentEvent: metaResponse ?? "Failed",
+    });
+
+  } catch (err) {
+    console.error(err);
+
+    return res.status(500).json({
       success: false,
-      message: "Ride not found"
+      message: "Internal Server Error",
     });
   }
-
-  if (ride.otp !== otp) {
-    return res.status(400).json({
-      success: false,
-      message: "Invalid OTP"
-    });
-  }
-
-  ride.status = "STARTED";
-
-  // await triggerRideStartedEvent(rideId);
-
-  return res.json({
-    success: true,
-    message: "OTP verified successfully.",
-    rideStatus: ride.status,
-    driver: ride.driver
-  });
 });
+async function sendRideStartedEvent(ride) {
+  try {
+    const entityId = process.env.META_ENTITY_ID;
+    console.log(ride)
 
+    const response = await axios.post(
+      `https://api.facebook.com/${entityId}/agent_event`,
+      {
+        to: ride.customerPhone,
+        event: {
+          type: "ride_started",
+          description:
+            "The customer OTP was verified and the ride has now started. Notify the user that their ride has begun and that they are on their way to the drop-off.",
+          payload: JSON.stringify({
+            rideId: ride.rideId,
+            rideStatus: ride.status,
+            driver: {
+              name: ride.driver.name,
+              phone: ride.driver.phone,
+              vehicle: ride.driver.vehicle,
+            },
+          }),
+        },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+          "X-API-Version": "2.0.0",
+        },
+      }
+    );
+
+    console.log("✅ Meta Agent Event Sent");
+    return response.data;
+  } catch (err) {
+    console.error(
+      "Meta Agent Event Failed",
+      err.response?.data || err.message
+    );
+    throw err;
+  }
+}
 // Meta Webhook Verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
