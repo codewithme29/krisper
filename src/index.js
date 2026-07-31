@@ -193,8 +193,7 @@ app.post("/route", async (req, res) => {
       dropoffLongitude,
     } = req.body;
 
-    // Validate input
-    if (
+     if (
       pickupLatitude == null ||
       pickupLongitude == null ||
       dropoffLatitude == null ||
@@ -202,13 +201,12 @@ app.post("/route", async (req, res) => {
     ) {
       return res.status(400).json({
         success: false,
-        message:
-          "pickupLatitude, pickupLongitude, dropoffLatitude and dropoffLongitude are required.",
+        message: "Pickup and dropoff coordinates are required.",
       });
     }
 
-    // Google Routes API
-    const googleResponse = await axios.post(
+    // Step 1: Compute the driving route
+    const routeResponse = await axios.post(
       "https://routes.googleapis.com/directions/v2:computeRoutes",
       {
         origin: {
@@ -235,14 +233,14 @@ app.post("/route", async (req, res) => {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": process.env.GOOGLE_MAPS_API_KEY,
           "X-Goog-FieldMask":
-            "routes.distanceMeters,routes.duration",
+            "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline",
         },
       }
     );
 
     if (
-      !googleResponse.data.routes ||
-      googleResponse.data.routes.length === 0
+      !routeResponse.data.routes ||
+      routeResponse.data.routes.length === 0
     ) {
       return res.status(404).json({
         success: false,
@@ -250,36 +248,38 @@ app.post("/route", async (req, res) => {
       });
     }
 
-    const route = googleResponse.data.routes[0];
+    const route = routeResponse.data.routes[0];
 
     const distanceMeters = route.distanceMeters;
     const distanceKm = (distanceMeters / 1000).toFixed(2);
 
+    // duration comes as "1832s"
     const durationSeconds = parseInt(route.duration.replace("s", ""), 10);
 
     const hours = Math.floor(durationSeconds / 3600);
     const minutes = Math.floor((durationSeconds % 3600) / 60);
 
-    const durationText =
+    const formattedDuration =
       hours > 0
         ? `${hours} hr ${minutes} min`
         : `${minutes} min`;
 
-    // Center of map
-    const centerLat =
-      (Number(pickupLatitude) + Number(dropoffLatitude)) / 2;
+    const encodedPolyline = route.polyline.encodedPolyline;
 
-    const centerLng =
-      (Number(pickupLongitude) + Number(dropoffLongitude)) / 2;
-
-    // Free OpenStreetMap Directions URL
+    // Step 2: Build Static Map URL
     const mapUrl =
-      `https://www.openstreetmap.org/directions` +
-      `?engine=fossgis_osrm_car` +
-      `&route=${pickupLatitude},${pickupLongitude};${dropoffLatitude},${dropoffLongitude}` +
-      `#map=12/${centerLat}/${centerLng}`;
+      `https://maps.googleapis.com/maps/api/staticmap` +
+      `?size=900x600` +
+      `&scale=2` +
+      `&maptype=roadmap` +
+      `&markers=color:green|label:P|${pickupLatitude},${pickupLongitude}` +
+      `&markers=color:red|label:D|${dropoffLatitude},${dropoffLongitude}` +
+      `&path=color:0x1976D2|weight:6|enc:${encodeURIComponent(
+        encodedPolyline
+      )}` +
+      `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
 
-    return res.status(200).json({
+    return res.json({
       success: true,
       pickup: {
         latitude: Number(pickupLatitude),
@@ -291,14 +291,29 @@ app.post("/route", async (req, res) => {
       },
       distance: {
         meters: distanceMeters,
-        kilometers: Number(distanceKm),
+        kilometers: distanceKm,
       },
       duration: {
         seconds: durationSeconds,
-        text: durationText,
+        text: formattedDuration,
       },
       mapUrl,
     });
+    // // Center of map
+    // const centerLat =
+    //   (Number(pickupLatitude) + Number(dropoffLatitude)) / 2;
+
+    // const centerLng =
+    //   (Number(pickupLongitude) + Number(dropoffLongitude)) / 2;
+
+    // // Free OpenStreetMap Directions URL
+    // const mapUrl =
+    //   `https://www.openstreetmap.org/directions` +
+    //   `?engine=fossgis_osrm_car` +
+    //   `&route=${pickupLatitude},${pickupLongitude};${dropoffLatitude},${dropoffLongitude}` +
+    //   `#map=12/${centerLat}/${centerLng}`;
+
+      
   } catch (err) {
     console.error(err.response?.data || err.message);
 
