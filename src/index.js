@@ -227,6 +227,7 @@ app.post("/route", async (req, res) => {
         },
         travelMode: "DRIVE",
         routingPreference: "TRAFFIC_AWARE",
+        polylineQuality: "OVERVIEW"
       },
       {
         headers: {
@@ -270,11 +271,11 @@ app.post("/route", async (req, res) => {
     const mapUrl =
       `https://maps.googleapis.com/maps/api/staticmap` +
       `?size=900x600` +
-      `&scale=2` +
+      `&scale=1` +
       `&maptype=roadmap` +
       `&markers=color:green|label:P|${pickupLatitude},${pickupLongitude}` +
       `&markers=color:red|label:D|${dropoffLatitude},${dropoffLongitude}` +
-      `&path=color:0x1976D2|weight:6|enc:${encodeURIComponent(
+      `&path=color:0x0b5394|weight:6|enc:${encodeURIComponent(
         encodedPolyline
       )}` +
       `&key=${process.env.GOOGLE_MAPS_API_KEY}`;
