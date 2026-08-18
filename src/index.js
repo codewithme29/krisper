@@ -673,11 +673,6 @@ app.post("/jira/webhook", async (req, res) => {
 
     whatsappNumber = String(whatsappNumber).replace(/\D/g, "");
 
-    // Add + if Jira stores number without it
-    if (!whatsappNumber.startsWith("+")) {
-      whatsappNumber = `+${whatsappNumber}`;
-    }
-
 
     // -----------------------------------------
     // Meta Agent Event API
@@ -738,7 +733,7 @@ app.post("/jira/webhook", async (req, res) => {
       agentEventPayload,
       {
         headers: {
-          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          Authorization: `Bearer ${WA_TOKEN}`,
           "Content-Type": "application/json",
           "X-API-Version": "2.0.0",
         },
