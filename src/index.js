@@ -609,7 +609,7 @@ async function sendRideStartedEvent(ride) {
     throw err;
   }
 }
-// Meta Webhook Verification
+// // Meta Webhook Verification
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -621,7 +621,7 @@ app.get("/webhook", (req, res) => {
     VERIFY_TOKEN,
   });
 
-  if (mode === "subscribe" && token === WA_TOKEN) {
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ WEBHOOK VERIFIED");
     return res.status(200).send(challenge);
   }
@@ -629,14 +629,30 @@ app.get("/webhook", (req, res) => {
   console.log("❌ WEBHOOK VERIFICATION FAILED");
   return res.sendStatus(403);
 });
+// Jira Automation Webhook
 
-// Meta Webhook Events
-app.post("/webhook", (req, res) => {
-  console.log("📩 Webhook Received");
+app.post("/jira/webhook", async (req, res) => {
+  console.log("\n================================");
+  console.log("📩 JIRA AUTOMATION EVENT RECEIVED");
+  console.log("================================");
 
+  console.log("Headers:");
+  console.dir(req.headers, { depth: null });
+
+  console.log("Body:");
   console.dir(req.body, { depth: null });
 
-  // Acknowledge receipt immediately
+  console.log("================================\n");
+
+  return res.status(200).json({
+    success: true,
+    message: "Jira event received",
+    receivedAt: new Date().toISOString(),
+  });
+});
+// Meta Webhook Events
+app.post("/webhook", (req, res) => {
+  console.log("calling",res)
   res.sendStatus(200);
 });
 
