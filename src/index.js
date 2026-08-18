@@ -633,22 +633,155 @@ app.get("/webhook", (req, res) => {
 
 app.post("/jira/webhook", async (req, res) => {
   console.log("\n================================");
-  console.log("📩 JIRA AUTOMATION EVENT RECEIVED");
+  console.log("📩 JIRA AUTOMATION EVENT");
   console.log("================================");
 
-  console.log("Headers:");
-  console.dir(req.headers, { depth: null });
+  try {
+    const issue = req.body?.issue;
+    const fields = issue?.fields;
 
-  console.log("Body:");
-  console.dir(req.body, { depth: null });
+    if (!issue || !fields) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid Jira payload",
+      });
+    }
 
-  console.log("================================\n");
+    // -----------------------------------------
+    // Jira details
+    // -----------------------------------------
 
-  return res.status(200).json({
-    success: true,
-    message: "Jira event received",
-    receivedAt: new Date().toISOString(),
-  });
+    const issueKey = issue.key;
+    const summary = fields.summary;
+    const description = fields.description;
+    const status = fields.status?.name;
+    const priority = fields.priority?.name;
+
+    // WhatsApp number stored in Jira custom field
+    let whatsappNumber = fields.customfield_10107;
+
+    if (!whatsappNumber) {
+      return res.status(400).json({
+        success: false,
+        message: "WhatsApp number not found in customfield_10107",
+      });
+    }
+
+    // -----------------------------------------
+    // Normalize WhatsApp number
+    // -----------------------------------------
+
+    whatsappNumber = String(whatsappNumber).replace(/\D/g, "");
+
+    // Add + if Jira stores number without it
+    if (!whatsappNumber.startsWith("+")) {
+      whatsappNumber = `+${whatsappNumber}`;
+    }
+
+
+    // -----------------------------------------
+    // Meta Agent Event API
+    // -----------------------------------------
+
+    const entityId = process.env.MULTI_APP_ENTITY_ID;
+
+    if (!entityId) {
+      return res.status(500).json({
+        success: false,
+        message: "Entity Id is not configured",
+      });
+    }
+
+    const agentEventUrl =
+      `https://api.facebook.com/${entityId}/agent_event`;
+
+    // -----------------------------------------
+    // Agent Event Payload
+    // -----------------------------------------
+
+    const agentEventPayload = {
+      to: whatsappNumber,
+
+      event: {
+        type: "jira_issue_updated",
+
+        description:
+          `Jira ticket ${issueKey} has been updated. Status: ${status}.`,
+
+        payload: JSON.stringify({
+          source: "jira",
+
+          issueKey,
+          summary,
+          description,
+          status,
+          priority,
+
+          whatsappNumber,
+
+          issueId: issue.id,
+
+          eventTime: new Date().toISOString(),
+        }),
+      },
+    };
+
+    console.log("\n📤 AGENT EVENT REQUEST");
+    console.dir(agentEventPayload, { depth: null });
+
+    // -----------------------------------------
+    // Send to Meta
+    // -----------------------------------------
+
+    const metaResponse = await axios.post(
+      agentEventUrl,
+      agentEventPayload,
+      {
+        headers: {
+          Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+          "Content-Type": "application/json",
+          "X-API-Version": "2.0.0",
+        },
+      }
+    );
+
+    console.log("\n✅ AGENT EVENT ACCEPTED");
+    console.dir(metaResponse.data, { depth: null });
+
+    // -----------------------------------------
+    // Response to Jira
+    // -----------------------------------------
+
+    return res.status(200).json({
+      success: true,
+
+      jira: {
+        issueKey,
+        status,
+      },
+
+      whatsapp: {
+        to: whatsappNumber,
+      },
+
+      agentEvent: metaResponse.data,
+    });
+
+  } catch (error) {
+    console.error("\n❌ AGENT EVENT ERROR");
+
+    console.error(
+      error.response?.data || error.message
+    );
+
+    return res.status(
+      error.response?.status || 500
+    ).json({
+      success: false,
+      message: "Failed to trigger Meta Agent Event",
+      error: error.response?.data || error.message,
+    });
+  }
 });
 // Meta Webhook Events
 app.post("/webhook", (req, res) => {
