@@ -59,11 +59,8 @@ function getOrdersByPhone(phone) {
     .sort((a, b) => new Date(b.placedAt) - new Date(a.placedAt));
 }
 
-function getItemForPhone(orderId, itemId, phone) {
-  const order = ORDERS.find((o) => o.orderId === orderId && o.phone === phone);
-  if (!order) return { order: null, item: null };
-  const item = order.items.find((i) => i.itemId === itemId) || null;
-  return { order, item };
+function getOrderForPhone(orderId, phone) {
+  return ORDERS.find((o) => o.orderId === orderId && o.phone === phone) || null;
 }
 
 /* -------------------------------------------------------------------- */
@@ -104,10 +101,10 @@ async function downloadWhatsAppMedia(mediaId) {
 /*  Returns service                                                     */
 /* -------------------------------------------------------------------- */
 
-function createReturn({ orderId, itemId, phone, reason, mediaMeta, classification }) {
+function createReturn({ orderId, itemId, phone, customerName, actionType, reason, mediaMeta, classification }) {
   const rmaId = `RMA-${orderId}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
   const record = {
-    rmaId, orderId, itemId, phone, reason, classification, mediaMeta,
+    rmaId, orderId, itemId, phone, customerName, actionType, reason, classification, mediaMeta,
     status: classification.autoApprove ? "approved" : "pending_review",
     createdAt: new Date().toISOString(),
     pickup: null,
@@ -148,59 +145,92 @@ function getRefundStatus(rmaId, phone) {
 /*  Routes                                                               */
 /* -------------------------------------------------------------------- */
 
-// GET /ecomm/orders?phone=918294576324[&orderId=ORD-1001]  -> getOrders
-router.get("/orders", (req, res) => {
+// GET /ecomm/orders?phone=918299576621[&orderId=ORD-1001]  -> getOrders
+router.get("/ecomm/orders", (req, res) => {
   const { phone, orderId } = req.query;
   if (!phone) return res.status(400).json({ error: "phone is required" });
 
   if (orderId) {
-    const order = ORDERS.find((o) => o.orderId === orderId && o.phone === phone);
+    const order = getOrderForPhone(orderId, phone);
     if (!order) return res.status(404).json({ error: "order_not_found" });
     return res.json({ orders: [order] });
   }
   return res.json({ orders: getOrdersByPhone(phone) });
 });
 
-// POST /ecomm/returns  { phone, orderId, itemId, reason, mediaId, autoApprove, damageCategory, notes }  -> initiateReturn
+// POST /ecomm/returns  { phone, name, orderNumber, actiontype, description, photos, autoApprove?, damageCategory?, notes? }  -> initiateReturn
 //
-// `autoApprove` / `damageCategory` / `notes` are the meta business agent's
-// OWN assessment of the photo it already looked at — this route does not
-// call any external model. It just downloads the photo as evidence (for
-// audit/record-keeping) and records the decision the agent already made.
-router.post("/returns", async (req, res) => {
-  const { phone, orderId, itemId, reason, mediaId, autoApprove, damageCategory, notes } = req.body || {};
-  if (!phone || !orderId || !itemId || !reason || !mediaId || typeof autoApprove !== "boolean") {
+// `phone` is attached automatically from the WhatsApp conversation.
+// `photos` is an array of WhatsApp media ids (one or more) — all are
+// downloaded as evidence. There's no itemId in the payload; this route
+// resolves the item from the order itself and echoes it back in the
+// response so the agent can confirm it to the customer.
+//
+// `autoApprove` / `damageCategory` / `notes` are optional — if the agent
+// supplies them, they're used; if not, this fails closed to pending_review
+// rather than guessing.
+router.post("/ecomm/returns", async (req, res) => {
+  const { phone, name, orderNumber, actiontype, description, photos, autoApprove, damageCategory, notes } = req.body || {};
+
+  if (!phone || !name || !orderNumber || !actiontype || !description || !Array.isArray(photos) || photos.length === 0) {
     return res.status(400).json({
-      error: "phone, orderId, itemId, reason, mediaId and autoApprove (boolean) are all required",
+      error: "phone, name, orderNumber, actiontype, description and at least one photo are all required",
     });
   }
+  if (!["return", "exchange"].includes(actiontype)) {
+    return res.status(400).json({ error: "actiontype must be 'return' or 'exchange'" });
+  }
 
-  const { order, item } = getItemForPhone(orderId, itemId, phone);
-  if (!order || !item) return res.status(404).json({ error: "order_or_item_not_found" });
+  const order = getOrderForPhone(orderNumber, phone);
+  if (!order) return res.status(404).json({ error: "order_not_found" });
 
-  let media;
+  if (!order.items || order.items.length === 0) {
+    return res.status(422).json({ error: "order_has_no_items" });
+  }
+  if (order.items.length > 1) {
+    return res.status(409).json({
+      error: "item_ambiguous",
+      message: "This order has more than one item — ask the customer which one they mean, then retry.",
+      items: order.items.map((i) => ({ itemId: i.itemId, name: i.name })),
+    });
+  }
+  const item = order.items[0];
+
+  let mediaList;
   try {
-    media = await downloadWhatsAppMedia(mediaId);
+    mediaList = await Promise.all(photos.map((mediaId) => downloadWhatsAppMedia(mediaId)));
   } catch (err) {
     return res.status(502).json({ error: "media_download_failed", detail: err.message });
   }
 
   const classification = {
-    autoApprove,
+    autoApprove: typeof autoApprove === "boolean" ? autoApprove : false,
     category: damageCategory || "unspecified",
     notes: notes || "",
   };
-  const mediaMeta = { mimeType: media.mimeType, sizeBytes: media.buffer.length };
-  const record = createReturn({ orderId, itemId, phone, reason, mediaMeta, classification });
+  const mediaMeta = mediaList.map((m) => ({ mimeType: m.mimeType, sizeBytes: m.buffer.length }));
+
+  const record = createReturn({
+    orderId: order.orderId,
+    itemId: item.itemId,
+    phone,
+    customerName: name,
+    actionType: actiontype,
+    reason: description,
+    mediaMeta,
+    classification,
+  });
 
   return res.status(201).json({
     rmaId: record.rmaId,
     status: record.status,
+    actionType: record.actionType,
+    item: { itemId: item.itemId, name: item.name },
   });
 });
 
 // POST /ecomm/returns/:rmaId/pickup  { phone, slot }  -> schedulePickup
-router.post("/returns/:rmaId/pickup", (req, res) => {
+router.post("/ecomm/returns/:rmaId/pickup", (req, res) => {
   const { phone, slot } = req.body || {};
   if (!phone || !slot) return res.status(400).json({ error: "phone and slot are required" });
 
@@ -216,7 +246,7 @@ router.post("/returns/:rmaId/pickup", (req, res) => {
 });
 
 // GET /ecomm/returns/:rmaId/refund?phone=...  -> getRefundStatus
-router.get("/returns/:rmaId/refund", (req, res) => {
+router.get("/ecomm/returns/:rmaId/refund", (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: "phone is required" });
 
