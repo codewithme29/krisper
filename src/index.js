@@ -4,6 +4,7 @@ import express from "express";
 import axios from "axios";
 import crypto from "crypto";
 import products from "./products.json" with { type: "json" };
+import ecommRouter from "./ecomm/ecomm.js";
 const app = express();
 
 app.use(express.json());
@@ -12,7 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WA_TOKEN = process.env.WHATSAPP_TOKEN;
-
+app.use("/ecomm", ecommRouter);
 // Health Check
 app.get("/health", (req, res) => {
   res.status(200).json({
