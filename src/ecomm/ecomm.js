@@ -18,7 +18,7 @@ const GRAPH_VERSION = process.env.WHATSAPP_GRAPH_VERSION || "v20.0";
 const ORDERS = [
   {
     orderId: "ORD-1001",
-    phone: "918294576324",
+    phone: "918299576621",
     placedAt: "2026-08-10T10:15:00Z",
     deliveredAt: "2026-08-14T13:40:00Z",
     items: [
@@ -27,7 +27,7 @@ const ORDERS = [
   },
   {
     orderId: "ORD-1002",
-    phone: "918294576324",
+    phone: "918299576621",
     placedAt: "2026-07-28T09:00:00Z",
     deliveredAt: "2026-08-01T11:20:00Z",
     items: [
@@ -36,7 +36,7 @@ const ORDERS = [
   },
   {
     orderId: "ORD-2050",
-    phone: "919876543210",
+    phone: "918299576621",
     placedAt: "2026-08-15T12:00:00Z",
     deliveredAt: "2026-08-18T09:10:00Z",
     items: [
@@ -149,7 +149,7 @@ function getRefundStatus(rmaId, phone) {
 /* -------------------------------------------------------------------- */
 
 // GET /ecomm/orders?phone=918294576324[&orderId=ORD-1001]  -> getOrders
-router.get("/ecomm/orders", (req, res) => {
+router.get("/orders", (req, res) => {
   const { phone, orderId } = req.query;
   if (!phone) return res.status(400).json({ error: "phone is required" });
 
@@ -167,7 +167,7 @@ router.get("/ecomm/orders", (req, res) => {
 // OWN assessment of the photo it already looked at — this route does not
 // call any external model. It just downloads the photo as evidence (for
 // audit/record-keeping) and records the decision the agent already made.
-router.post("/ecomm/returns", async (req, res) => {
+router.post("/returns", async (req, res) => {
   const { phone, orderId, itemId, reason, mediaId, autoApprove, damageCategory, notes } = req.body || {};
   if (!phone || !orderId || !itemId || !reason || !mediaId || typeof autoApprove !== "boolean") {
     return res.status(400).json({
@@ -200,7 +200,7 @@ router.post("/ecomm/returns", async (req, res) => {
 });
 
 // POST /ecomm/returns/:rmaId/pickup  { phone, slot }  -> schedulePickup
-router.post("/ecomm/returns/:rmaId/pickup", (req, res) => {
+router.post("/returns/:rmaId/pickup", (req, res) => {
   const { phone, slot } = req.body || {};
   if (!phone || !slot) return res.status(400).json({ error: "phone and slot are required" });
 
@@ -216,7 +216,7 @@ router.post("/ecomm/returns/:rmaId/pickup", (req, res) => {
 });
 
 // GET /ecomm/returns/:rmaId/refund?phone=...  -> getRefundStatus
-router.get("/ecomm/returns/:rmaId/refund", (req, res) => {
+router.get("/returns/:rmaId/refund", (req, res) => {
   const { phone } = req.query;
   if (!phone) return res.status(400).json({ error: "phone is required" });
 

@@ -13,7 +13,7 @@ app.use(express.urlencoded({ extended: true }));
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const WA_TOKEN = process.env.WHATSAPP_TOKEN;
-app.use("/ecomm", ecommRouter);
+
 // Health Check
 app.get("/health", (req, res) => {
   res.status(200).json({
@@ -785,13 +785,13 @@ app.post("/webhook", (req, res) => {
   res.sendStatus(200);
 });
 
+app.use("/ecomm", ecommRouter);
 // 404 Handler
 app.use((req, res) => {
   res.status(404).json({
     error: "Route not found",
   });
 });
-
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`Health : http://localhost:${PORT}/health`);
