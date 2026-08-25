@@ -5,6 +5,9 @@ import axios from "axios";
 import crypto from "crypto";
 import products from "./products.json" with { type: "json" };
 import ecommRouter from "./ecomm/ecomm.js";
+import telecomRouter from "./telecom/telecom.js";
+
+
 const app = express();
 
 app.use(express.json());
@@ -786,6 +789,7 @@ app.post("/webhook", (req, res) => {
 });
 
 app.use("/ecomm", ecommRouter);
+app.use("/telecom", telecomRouter);
 // 404 Handler
 app.use((req, res) => {
   res.status(404).json({
