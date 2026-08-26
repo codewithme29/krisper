@@ -1,8 +1,4 @@
 import express from "express";
-import axios from "axios";
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
 
 const router = express.Router();
 
@@ -17,14 +13,13 @@ const ACCOUNTS = {
     phone: "918299576621",
     plan: "Unlimited 5G ₹399",
     status: "Active",
-    balance: 12.5,            // current main balance (₹)
+    balance: 12.5,
     dataRemainingGB: 3.2,
     billingCycle: "01 Aug – 31 Aug 2026",
     dueDate: "2026-09-06",
-    currentBill: 799,         // this month's total (₹)
-    averageBill: 399,         // 3-month average (₹) — used for anomaly explain
+    currentBill: 799,
+    averageBill: 399,
     currency: "INR",
-    // `variance` = extra vs. a normal month (drives the "why is it higher" answer)
     lineItems: [
       { code: "RENTAL",  label: "Monthly plan rental (Unlimited 5G ₹399)", amount: 399, category: "Fixed",  variance: 0,   note: "Same every month" },
       { code: "ROAMING", label: "International roaming usage",              amount: 280, category: "Usage",  variance: 280, note: "Roaming in UAE from 3–5 Aug (2 days)" },
@@ -40,7 +35,28 @@ const ACCOUNTS = {
 /* -------------------------------------------------------------------------- */
 
 const normalisePhone = (raw) => String(raw || "").replace(/[^\d]/g, "");
-const getSubscriber = (phone) => ACCOUNTS[normalisePhone(phone)] || null;
+
+// Read phone from query, body, or header — whichever the connector uses.
+function extractPhone(req) {
+  return (
+    req.query.phone ||
+    (req.body && req.body.phone) ||
+    req.get("X-WhatsApp-Phone") ||
+    req.get("x-whatsapp-phone") ||
+    ""
+  );
+}
+
+// Demo-friendly resolver: exact match first, else fall back to the default
+// subscriber so the PoC always returns data even if the bound number differs
+// or the binding didn't resolve. In production, return null on no match.
+const DEFAULT_PHONE = "918299576621";
+function getSubscriber(rawPhone) {
+  const p = normalisePhone(rawPhone);
+  console.log("[telecom] resolve phone:", JSON.stringify(rawPhone), "->", p || "(empty)");
+  return ACCOUNTS[p] || ACCOUNTS[DEFAULT_PHONE] || null;
+}
+
 const inr = (n) => `₹${Number(n).toLocaleString("en-IN")}`;
 
 // Plain-language explanation of the whole bill (anomaly-first).
@@ -72,10 +88,8 @@ function explainWholeBill(acct) {
 function explainAmount(acct, queriedAmount) {
   const amt = Number(queriedAmount);
 
-  // 1) Exact match on a line item.
   let match = acct.lineItems.find((li) => li.amount === amt);
 
-  // 2) Match the total "extra vs usual".
   const extra = acct.currentBill - acct.averageBill;
   if (!match && amt === extra) {
     const drivers = acct.lineItems
@@ -91,7 +105,6 @@ function explainAmount(acct, queriedAmount) {
     };
   }
 
-  // 3) Closest line item within ₹5 if no exact hit.
   if (!match) {
     match = acct.lineItems
       .map((li) => ({ li, diff: Math.abs(li.amount - amt) }))
@@ -125,11 +138,24 @@ function explainAmount(acct, queriedAmount) {
 /*  ROUTES                                                                     */
 /* -------------------------------------------------------------------------- */
 
+// Health check
+router.get("/health", (_req, res) => res.json({ ok: true, service: "telecom" }));
 
-// GET /telecom/account?phone=…  → getAccount connector tool
-router.get("/account", (req, res) => {
-  const acct = getSubscriber(req.query.phone);
-  if (!acct) return res.status(404).json({ error: "account_not_found", phone: req.query.phone });
+// DEBUG: hit this from the agent (or browser) to see exactly what arrives.
+router.all("/whoami", (req, res) => {
+  res.json({
+    method: req.method,
+    query: req.query,
+    body: req.body || null,
+    phoneHeader: req.get("X-WhatsApp-Phone") || null,
+    resolvedPhone: normalisePhone(extractPhone(req)) || "(empty)",
+  });
+});
+
+/* ---- ACCOUNT : answers BOTH GET (?phone=) and POST ({phone}) -------------- */
+const accountHandler = (req, res) => {
+  const acct = getSubscriber(extractPhone(req));
+  if (!acct) return res.status(404).json({ error: "account_not_found" });
 
   res.json({
     accountId: acct.accountId,
@@ -143,13 +169,14 @@ router.get("/account", (req, res) => {
     currentBill: acct.currentBill,
     currency: acct.currency,
   });
-});
+};
+router.get("/account", accountHandler);
+router.post("/account", accountHandler);
 
-// GET /telecom/bill?phone=…  → getBillBreakdown connector tool
-// Returns itemised bill AND a ready-to-send plain-language explanation.
-router.get("/bill", (req, res) => {
-  const acct = getSubscriber(req.query.phone);
-  if (!acct) return res.status(404).json({ error: "account_not_found", phone: req.query.phone });
+/* ---- BILL : answers BOTH GET (?phone=) and POST ({phone}) ----------------- */
+const billHandler = (req, res) => {
+  const acct = getSubscriber(extractPhone(req));
+  if (!acct) return res.status(404).json({ error: "account_not_found" });
 
   res.json({
     accountId: acct.accountId,
@@ -161,17 +188,18 @@ router.get("/bill", (req, res) => {
     lineItems: acct.lineItems.map(({ code, label, amount, category, note }) => ({
       code, label, amount, category, note,
     })),
-    explanation: explainWholeBill(acct), // headline + plainText the agent sends as-is
+    explanation: explainWholeBill(acct),
   });
-});
+};
+router.get("/bill", billHandler);
+router.post("/bill", billHandler);
 
-// POST /telecom/bill/explain
-// Body: { phone, amount }  → explain that charge   |  { phone } → explain whole bill
+/* ---- EXPLAIN A CHARGE : POST {phone, amount?} ----------------------------- */
 router.post("/bill/explain", (req, res) => {
-  const { phone, amount } = req.body || {};
-  const acct = getSubscriber(phone);
-  if (!acct) return res.status(404).json({ error: "account_not_found", phone });
+  const acct = getSubscriber(extractPhone(req));
+  if (!acct) return res.status(404).json({ error: "account_not_found" });
 
+  const amount = req.body ? req.body.amount : undefined;
   if (amount === undefined || amount === null || amount === "") {
     return res.json({ type: "whole_bill", ...explainWholeBill(acct) });
   }
