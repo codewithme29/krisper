@@ -11,7 +11,7 @@ const ACCOUNTS = {
     accountId: "ACC-100245",
     name: "Priyam Srivastava",
     phone: "918299576621",
-    plan: "Unlimited 5G ₹399",
+    plan: "Unlimited 5G Rs.399",
     status: "Active",
     balance: 12.5,
     dataRemainingGB: 3.2,
@@ -21,7 +21,7 @@ const ACCOUNTS = {
     averageBill: 399,
     currency: "INR",
     lineItems: [
-      { code: "RENTAL",  label: "Monthly plan rental (Unlimited 5G ₹399)", amount: 399, category: "Fixed",  variance: 0,   note: "Same every month" },
+      { code: "RENTAL",  label: "Monthly plan rental (Unlimited 5G Rs.399)", amount: 399, category: "Fixed",  variance: 0,   note: "Same every month" },
       { code: "ROAMING", label: "International roaming usage",              amount: 280, category: "Usage",  variance: 280, note: "Roaming in UAE from 3–5 Aug (2 days)" },
       { code: "DATAOVR", label: "Extra data beyond plan limit",            amount: 60,  category: "Usage",  variance: 60,  note: "1.2 GB used after fair-usage limit on 22 Aug" },
       { code: "VAS",     label: "Caller tune subscription",                amount: 30,  category: "Add-on", variance: 30,  note: "Auto-renewed on 05 Aug" },
@@ -57,7 +57,7 @@ function getSubscriber(rawPhone) {
   return ACCOUNTS[p] || ACCOUNTS[DEFAULT_PHONE] || null;
 }
 
-const inr = (n) => `₹${Number(n).toLocaleString("en-IN")}`;
+const inr = (n) => `Rs.${Number(n).toLocaleString("en-IN")}`;
 
 // Plain-language explanation of the whole bill (anomaly-first).
 function explainWholeBill(acct) {
@@ -84,7 +84,7 @@ function explainWholeBill(acct) {
   };
 }
 
-// Explain a specific amount the user is questioning ("why ₹280 extra?").
+// Explain a specific amount the user is questioning ("why Rs.280 extra?").
 function explainAmount(acct, queriedAmount) {
   const amt = Number(queriedAmount);
 
