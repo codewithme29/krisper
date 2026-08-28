@@ -1,5 +1,5 @@
 import express from "express";
-
+import { buildBillPdf } from "./billPdf.js";
 const router = express.Router();
 
 /* -------------------------------------------------------------------------- */
@@ -205,5 +205,30 @@ router.post("/bill/explain", (req, res) => {
   }
   return res.json({ type: "single_charge", ...explainAmount(acct, amount) });
 });
+/* ---- BILL PDF : answers BOTH GET (?phone=) and POST ({phone}) ------------- */
+const billPdfHandler = async (req, res) => {
+  const acct = getSubscriber(extractPhone(req));
+  if (!acct) return res.status(404).json({ error: "account_not_found" });
+ 
+  try {
+    const pdfBytes = await buildBillPdf(acct);
+    const cycleSlug = acct.billingCycle.replace(/[^\dA-Za-z]+/g, "-");
+    const filename = `bill-${acct.accountId}-${cycleSlug}.pdf`;
+ 
+    res.set({
+      "Content-Type": "application/pdf",
+      // "attachment" forces download; swap to "inline" if you want it to
+      // open in-browser instead (e.g. when sent as a WhatsApp link preview).
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Length": pdfBytes.length,
+    });
+    res.send(Buffer.from(pdfBytes));
+  } catch (err) {
+    console.error("[telecom] bill PDF generation failed:", err);
+    res.status(500).json({ error: "pdf_generation_failed" });
+  }
+};
+router.get("/bill/pdf", billPdfHandler);
+router.post("/bill/pdf", billPdfHandler);
 
 export default router;
