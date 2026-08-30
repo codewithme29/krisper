@@ -70,6 +70,7 @@ function getSubscriber(rawPhone) {
 }
 
 const inr = (n) => `Rs.${Number(n).toLocaleString("en-IN")}`;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Plain-language explanation of the whole bill (anomaly-first).
 function explainWholeBill(acct) {
@@ -147,37 +148,45 @@ function explainAmount(acct, queriedAmount) {
 
 /* -------------------------------------------------------------------------- */
 /*  THREAD CONTROL                                                             */
-/*  URL path uses YOUR WABA phone number id (constant).                        */
+/*  Mirrors the manual call that worked: POST body + Bearer token, nothing     */
+/*  else. URL path uses YOUR WABA phone number id (constant).                  */
 /*  `to` is the CONSUMER's number — always dynamic per conversation.           */
 /* -------------------------------------------------------------------------- */
 async function threadControl(action, to) {
-  const { data } = await axios.post(
-    `${FB_BIZ}/phone_numbers/${PHONE_NUMBER_ID}/thread_control`,
-    { messaging_product: "whatsapp", action, to },
-    {
-      headers: {
-        Authorization: `Bearer ${WA_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+  const url = `${FB_BIZ}/phone_numbers/${PHONE_NUMBER_ID}/thread_control`;
+  const payload = { messaging_product: "whatsapp", action, to };
+
+  console.log(`[telecom] thread_control -> ${action}`, JSON.stringify(payload));
+  const { data } = await axios.post(url, payload, {
+    headers: {
+      Authorization: `Bearer ${WA_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+  });
+  console.log(`[telecom] thread_control <- ${action} OK:`, JSON.stringify(data));
   return data;
 }
 const takeControl = (to) => threadControl("take", to);
 
-// Release with one retry — we must NEVER leave the thread stuck with the app.
+// Release with backoff — the send needs a moment to settle before Meta will
+// accept the release (an immediate release races and fails; a slightly delayed
+// one succeeds, exactly like the manual call did).
 async function releaseControl(to) {
-  try {
-    return await threadControl("release", to);
-  } catch (err) {
-    console.warn("[telecom] release attempt 1 failed, retrying:", err.response?.data || err.message);
+  const delays = [800, 1500, 2500]; // ms before each attempt
+  let lastErr;
+  for (let i = 0; i < delays.length; i++) {
+    await sleep(delays[i]);
     try {
-      return await threadControl("release", to);
-    } catch (err2) {
-      console.error("[telecom] CONTROL NOT RETURNED for", to, "-", err2.response?.data || err2.message);
-      throw err2;
+      const data = await threadControl("release", to);
+      console.log(`[telecom] control released on attempt ${i + 1} for`, to);
+      return data;
+    } catch (err) {
+      lastErr = err.response?.data || err.message;
+      console.warn(`[telecom] release attempt ${i + 1} failed:`, JSON.stringify(lastErr));
     }
   }
+  console.error("[telecom] CONTROL NOT RETURNED for", to, "-", JSON.stringify(lastErr));
+  throw new Error("release_failed");
 }
 
 /* -------------------------------------------------------------------------- */
@@ -345,7 +354,7 @@ const billPdfRawHandler = async (req, res) => {
 };
 
 // POST: connector tool calls this.
-// Flow: take thread control -> upload PDF -> send document -> release control back to agent.
+// Flow: take control -> upload PDF -> send document -> ALWAYS release (backoff) in finally.
 const billPdfSendHandler = async (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
@@ -373,14 +382,10 @@ const billPdfSendHandler = async (req, res) => {
     // 2) upload bytes -> media_id, then send the document message
     const mediaId = await uploadToWhatsApp(pdfBytes, filename);
     const sendRes = await sendDocument(to, mediaId, filename, caption);
+    console.log("[telecom] document sent, wamid:", sendRes?.messages?.[0]?.id);
 
-    // 3) release control back to the Meta Business Agent
-    if (USE_THREAD_HANDOFF) {
-      await releaseControl(to);
-      held = false;
-    }
-
-    return res.json({
+    // Respond to the connector now; release runs in finally.
+    res.json({
       status: "sent",
       delivered: true,
       accountId: acct.accountId,
@@ -393,8 +398,8 @@ const billPdfSendHandler = async (req, res) => {
   } catch (err) {
     console.error("[telecom] bill PDF send failed:", err.response?.data || err.message);
 
-    // If we still hold control, try a text fallback so the user isn't left empty-handed,
-    // then ALWAYS release control back to the agent.
+    // If we already took control but couldn't deliver the PDF, send a text
+    // fallback so the user isn't left empty-handed. (Release still runs in finally.)
     if (held) {
       try {
         await sendText(
@@ -402,15 +407,22 @@ const billPdfSendHandler = async (req, res) => {
           `Sorry, I couldn't attach your bill PDF just now. Here's the summary instead:\n\n${explainWholeBill(acct).plainText}`
         );
       } catch (_) {}
+    }
+    if (!res.headersSent) {
+      res.status(500).json({ error: "bill_pdf_failed" });
+    }
+  } finally {
+    // 3) ALWAYS release control back to the Meta Business Agent — with backoff
+    //    so the document send has time to settle before the release lands.
+    if (held) {
       try {
         await releaseControl(to);
         held = false;
-      } catch (_) {
-        // releaseControl already logs the loud "CONTROL NOT RETURNED" alarm
+        console.log("[telecom] thread control returned to agent for", to);
+      } catch (e) {
+        console.error("[telecom] release ultimately failed for", to, "- agent may be muted:", e.message);
       }
     }
-
-    return res.status(500).json({ error: "bill_pdf_failed" });
   }
 };
 
