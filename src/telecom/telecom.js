@@ -168,25 +168,28 @@ async function threadControl(action, to) {
 }
 const takeControl = (to) => threadControl("take", to);
 
-// Release with backoff — the send needs a moment to settle before Meta will
-// accept the release (an immediate release races and fails; a slightly delayed
-// one succeeds, exactly like the manual call did).
-async function releaseControl(to) {
-  const delays = [800, 1500, 2500]; // ms before each attempt
-  let lastErr;
-  for (let i = 0; i < delays.length; i++) {
-    await sleep(delays[i]);
+// Release DETACHED from the request. Meta's 200 on release is only an ack — the
+// actual ownership hand-back settles asynchronously, so we wait a few seconds
+// (the send needs to finish settling) and then release a couple of times with
+// spacing until it sticks. This mirrors why a later manual release worked.
+async function releaseControlDetached(to) {
+  // Let Meta finish processing the take + document send first.
+  await sleep(4000);
+
+  const spacing = [0, 2500, 4000]; // extra wait before each release attempt
+  for (let i = 0; i < spacing.length; i++) {
+    if (spacing[i]) await sleep(spacing[i]);
     try {
-      const data = await threadControl("release", to);
-      console.log(`[telecom] control released on attempt ${i + 1} for`, to);
-      return data;
+      await threadControl("release", to);
+      console.log(`[telecom] detached release call ${i + 1} acked for`, to);
     } catch (err) {
-      lastErr = err.response?.data || err.message;
-      console.warn(`[telecom] release attempt ${i + 1} failed:`, JSON.stringify(lastErr));
+      console.warn(
+        `[telecom] detached release call ${i + 1} failed:`,
+        JSON.stringify(err.response?.data || err.message)
+      );
     }
   }
-  console.error("[telecom] CONTROL NOT RETURNED for", to, "-", JSON.stringify(lastErr));
-  throw new Error("release_failed");
+  console.log("[telecom] detached release sequence complete for", to);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -275,6 +278,18 @@ router.all("/whoami", (req, res) => {
   });
 });
 
+// DEBUG: manually release control for a number (same as your manual API call).
+router.all("/thread/release", async (req, res) => {
+  const to = normalisePhone(extractPhone(req));
+  if (!to) return res.status(400).json({ error: "phone_required" });
+  try {
+    const data = await threadControl("release", to);
+    res.json({ released: true, to, data });
+  } catch (err) {
+    res.status(500).json({ released: false, to, error: err.response?.data || err.message });
+  }
+});
+
 /* ---- ACCOUNT : GET (?phone=) and POST ({phone}) -------------------------- */
 const accountHandler = (req, res) => {
   const acct = getSubscriber(extractPhone(req));
@@ -354,7 +369,7 @@ const billPdfRawHandler = async (req, res) => {
 };
 
 // POST: connector tool calls this.
-// Flow: take control -> upload PDF -> send document -> ALWAYS release (backoff) in finally.
+// Flow: take control -> upload PDF -> send document -> respond -> DETACHED release.
 const billPdfSendHandler = async (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
@@ -384,7 +399,7 @@ const billPdfSendHandler = async (req, res) => {
     const sendRes = await sendDocument(to, mediaId, filename, caption);
     console.log("[telecom] document sent, wamid:", sendRes?.messages?.[0]?.id);
 
-    // Respond to the connector now; release runs in finally.
+    // Respond to the connector immediately; release runs detached below.
     res.json({
       status: "sent",
       delivered: true,
@@ -399,7 +414,7 @@ const billPdfSendHandler = async (req, res) => {
     console.error("[telecom] bill PDF send failed:", err.response?.data || err.message);
 
     // If we already took control but couldn't deliver the PDF, send a text
-    // fallback so the user isn't left empty-handed. (Release still runs in finally.)
+    // fallback so the user isn't left empty-handed. (Release still runs below.)
     if (held) {
       try {
         await sendText(
@@ -412,21 +427,17 @@ const billPdfSendHandler = async (req, res) => {
       res.status(500).json({ error: "bill_pdf_failed" });
     }
   } finally {
-    // 3) ALWAYS release control back to the Meta Business Agent — with backoff
-    //    so the document send has time to settle before the release lands.
+    // 3) Release control back to the agent — DETACHED (not awaited) so the
+    //    connector response returns instantly while the release settles.
     if (held) {
-      try {
-        await releaseControl(to);
-        held = false;
-        console.log("[telecom] thread control returned to agent for", to);
-      } catch (e) {
-        console.error("[telecom] release ultimately failed for", to, "- agent may be muted:", e.message);
-      }
+      releaseControlDetached(to).catch((e) =>
+        console.error("[telecom] detached release crashed for", to, "-", e.message)
+      );
     }
   }
 };
 
 router.get("/bill/pdf", billPdfRawHandler);   // direct download (browser/testing)
-router.post("/bill/pdf", billPdfSendHandler); // take -> send document -> release
+router.post("/bill/pdf", billPdfSendHandler); // take -> send document -> detached release
 
 export default router;
