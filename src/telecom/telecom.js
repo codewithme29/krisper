@@ -1,11 +1,25 @@
 import express from "express";
+import axios from "axios";
+import FormData from "form-data";
 import { buildBillPdf } from "./billPdf.js";
+
 const router = express.Router();
+
+/* -------------------------------------------------------------------------- */
+/*  CONFIG                                                                     */
+/* -------------------------------------------------------------------------- */
+const GRAPH = "https://graph.facebook.com/v21.0";
+const FB_BIZ = "https://api.facebook.com/business/whatsapp"; // thread_control base
+
+const PHONE_NUMBER_ID = process.env.WHATSAPP_PHONE_NUMBER_ID; // e.g. 1216056534931737
+const WA_TOKEN = process.env.WHATSAPP_TOKEN;                   // system-user / permanent token
+
+// take -> send -> release. Set false to send the document WITHOUT thread control.
+const USE_THREAD_HANDOFF = true;
 
 /* -------------------------------------------------------------------------- */
 /*  MOCK DATA STORE — replace with real BSS / billing API calls in production  */
 /* -------------------------------------------------------------------------- */
-
 const ACCOUNTS = {
   "918299576621": {
     accountId: "ACC-100245",
@@ -33,7 +47,6 @@ const ACCOUNTS = {
 /* -------------------------------------------------------------------------- */
 /*  HELPERS                                                                    */
 /* -------------------------------------------------------------------------- */
-
 const normalisePhone = (raw) => String(raw || "").replace(/[^\d]/g, "");
 
 // Read phone from query, body, or header — whichever the connector uses.
@@ -48,8 +61,7 @@ function extractPhone(req) {
 }
 
 // Demo-friendly resolver: exact match first, else fall back to the default
-// subscriber so the PoC always returns data even if the bound number differs
-// or the binding didn't resolve. In production, return null on no match.
+// subscriber so the PoC always returns data. In production, return null on no match.
 const DEFAULT_PHONE = "918299576621";
 function getSubscriber(rawPhone) {
   const p = normalisePhone(rawPhone);
@@ -87,7 +99,6 @@ function explainWholeBill(acct) {
 // Explain a specific amount the user is questioning ("why Rs.280 extra?").
 function explainAmount(acct, queriedAmount) {
   const amt = Number(queriedAmount);
-
   let match = acct.lineItems.find((li) => li.amount === amt);
 
   const extra = acct.currentBill - acct.averageBill;
@@ -135,13 +146,116 @@ function explainAmount(acct, queriedAmount) {
 }
 
 /* -------------------------------------------------------------------------- */
+/*  THREAD CONTROL                                                             */
+/*  URL path uses YOUR WABA phone number id (constant).                        */
+/*  `to` is the CONSUMER's number — always dynamic per conversation.           */
+/* -------------------------------------------------------------------------- */
+async function threadControl(action, to) {
+  const { data } = await axios.post(
+    `${FB_BIZ}/phone_numbers/${PHONE_NUMBER_ID}/thread_control`,
+    { messaging_product: "whatsapp", action, to },
+    {
+      headers: {
+        Authorization: `Bearer ${WA_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return data;
+}
+const takeControl = (to) => threadControl("take", to);
+
+// Release with one retry — we must NEVER leave the thread stuck with the app.
+async function releaseControl(to) {
+  try {
+    return await threadControl("release", to);
+  } catch (err) {
+    console.warn("[telecom] release attempt 1 failed, retrying:", err.response?.data || err.message);
+    try {
+      return await threadControl("release", to);
+    } catch (err2) {
+      console.error("[telecom] CONTROL NOT RETURNED for", to, "-", err2.response?.data || err2.message);
+      throw err2;
+    }
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/*  WHATSAPP MEDIA HELPERS                                                     */
+/* -------------------------------------------------------------------------- */
+
+/* Step 1 — upload PDF bytes to WhatsApp -> returns media_id (file stays private). */
+async function uploadToWhatsApp(pdfBytes, filename) {
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("type", "application/pdf");
+  form.append("file", Buffer.from(pdfBytes), {
+    filename,
+    contentType: "application/pdf",
+  });
+
+  const { data } = await axios.post(
+    `${GRAPH}/${PHONE_NUMBER_ID}/media`,
+    form,
+    {
+      headers: { ...form.getHeaders(), Authorization: `Bearer ${WA_TOKEN}` },
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+    }
+  );
+  return data.id; // media_id
+}
+
+/* Step 2 — send a document message referencing the uploaded media_id. */
+async function sendDocument(to, mediaId, filename, caption) {
+  const { data } = await axios.post(
+    `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "document",
+      document: { id: mediaId, filename, caption },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WA_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return data; // { messaging_product, contacts, messages:[{id: wamid}] }
+}
+
+/* Fallback — plain text service message if the document couldn't be sent. */
+async function sendText(to, body) {
+  const { data } = await axios.post(
+    `${GRAPH}/${PHONE_NUMBER_ID}/messages`,
+    {
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to,
+      type: "text",
+      text: { body },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${WA_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  return data;
+}
+
+/* -------------------------------------------------------------------------- */
 /*  ROUTES                                                                     */
 /* -------------------------------------------------------------------------- */
 
 // Health check
 router.get("/health", (_req, res) => res.json({ ok: true, service: "telecom" }));
 
-// DEBUG: hit this from the agent (or browser) to see exactly what arrives.
+// DEBUG: hit this to see exactly what arrives.
 router.all("/whoami", (req, res) => {
   res.json({
     method: req.method,
@@ -152,7 +266,7 @@ router.all("/whoami", (req, res) => {
   });
 });
 
-/* ---- ACCOUNT : answers BOTH GET (?phone=) and POST ({phone}) -------------- */
+/* ---- ACCOUNT : GET (?phone=) and POST ({phone}) -------------------------- */
 const accountHandler = (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
@@ -173,7 +287,7 @@ const accountHandler = (req, res) => {
 router.get("/account", accountHandler);
 router.post("/account", accountHandler);
 
-/* ---- BILL : answers BOTH GET (?phone=) and POST ({phone}) ----------------- */
+/* ---- BILL : GET (?phone=) and POST ({phone}) ----------------------------- */
 const billHandler = (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
@@ -194,7 +308,7 @@ const billHandler = (req, res) => {
 router.get("/bill", billHandler);
 router.post("/bill", billHandler);
 
-/* ---- EXPLAIN A CHARGE : POST {phone, amount?} ----------------------------- */
+/* ---- EXPLAIN A CHARGE : POST {phone, amount?} ---------------------------- */
 router.post("/bill/explain", (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
@@ -205,20 +319,21 @@ router.post("/bill/explain", (req, res) => {
   }
   return res.json({ type: "single_charge", ...explainAmount(acct, amount) });
 });
-/* ---- BILL PDF : answers BOTH GET (?phone=) and POST ({phone}) ------------- */
-const billPdfHandler = async (req, res) => {
+
+/* ---- BILL PDF ------------------------------------------------------------ */
+
+// GET: raw bytes — browser / manual download / testing only.
+const billPdfRawHandler = async (req, res) => {
   const acct = getSubscriber(extractPhone(req));
   if (!acct) return res.status(404).json({ error: "account_not_found" });
- 
+
   try {
     const pdfBytes = await buildBillPdf(acct);
     const cycleSlug = acct.billingCycle.replace(/[^\dA-Za-z]+/g, "-");
     const filename = `bill-${acct.accountId}-${cycleSlug}.pdf`;
- 
+
     res.set({
       "Content-Type": "application/pdf",
-      // "attachment" forces download; swap to "inline" if you want it to
-      // open in-browser instead (e.g. when sent as a WhatsApp link preview).
       "Content-Disposition": `attachment; filename="${filename}"`,
       "Content-Length": pdfBytes.length,
     });
@@ -228,7 +343,78 @@ const billPdfHandler = async (req, res) => {
     res.status(500).json({ error: "pdf_generation_failed" });
   }
 };
-router.get("/bill/pdf", billPdfHandler);
-router.post("/bill/pdf", billPdfHandler);
+
+// POST: connector tool calls this.
+// Flow: take thread control -> upload PDF -> send document -> release control back to agent.
+const billPdfSendHandler = async (req, res) => {
+  const acct = getSubscriber(extractPhone(req));
+  if (!acct) return res.status(404).json({ error: "account_not_found" });
+
+  if (!PHONE_NUMBER_ID || !WA_TOKEN) {
+    console.error("[telecom] missing WHATSAPP_PHONE_NUMBER_ID or WHATSAPP_TOKEN");
+    return res.status(500).json({ error: "whatsapp_not_configured" });
+  }
+
+  const to = acct.phone; // dynamic consumer number
+  let held = false;      // true while the app holds thread control
+
+  try {
+    const pdfBytes = await buildBillPdf(acct);
+    const cycleSlug = acct.billingCycle.replace(/[^\dA-Za-z]+/g, "-");
+    const filename = `bill-${acct.accountId}-${cycleSlug}.pdf`;
+    const caption = `Your itemised bill for ${acct.billingCycle}. Total Rs. ${Number(acct.currentBill).toLocaleString("en-IN")}.`;
+
+    // 1) take control from the Meta Business Agent
+    if (USE_THREAD_HANDOFF) {
+      await takeControl(to);
+      held = true;
+    }
+
+    // 2) upload bytes -> media_id, then send the document message
+    const mediaId = await uploadToWhatsApp(pdfBytes, filename);
+    const sendRes = await sendDocument(to, mediaId, filename, caption);
+
+    // 3) release control back to the Meta Business Agent
+    if (USE_THREAD_HANDOFF) {
+      await releaseControl(to);
+      held = false;
+    }
+
+    return res.json({
+      status: "sent",
+      delivered: true,
+      accountId: acct.accountId,
+      billingCycle: acct.billingCycle,
+      total: acct.currentBill,
+      filename,
+      wamid: sendRes?.messages?.[0]?.id ?? null,
+      plainText: `I've sent your itemised bill (${filename}) here as a PDF. 📄`,
+    });
+  } catch (err) {
+    console.error("[telecom] bill PDF send failed:", err.response?.data || err.message);
+
+    // If we still hold control, try a text fallback so the user isn't left empty-handed,
+    // then ALWAYS release control back to the agent.
+    if (held) {
+      try {
+        await sendText(
+          to,
+          `Sorry, I couldn't attach your bill PDF just now. Here's the summary instead:\n\n${explainWholeBill(acct).plainText}`
+        );
+      } catch (_) {}
+      try {
+        await releaseControl(to);
+        held = false;
+      } catch (_) {
+        // releaseControl already logs the loud "CONTROL NOT RETURNED" alarm
+      }
+    }
+
+    return res.status(500).json({ error: "bill_pdf_failed" });
+  }
+};
+
+router.get("/bill/pdf", billPdfRawHandler);   // direct download (browser/testing)
+router.post("/bill/pdf", billPdfSendHandler); // take -> send document -> release
 
 export default router;
